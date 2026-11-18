@@ -130,7 +130,16 @@ jobs:
           PY
       - name: configuration (Dockerfile and Terraform)
         if: always()
-        run: bin/trivy config --severity HIGH,CRITICAL --exit-code 1 --ignorefile .trivyignore docker examples/terraform
+        run: |
+          bin/trivy config --severity HIGH,CRITICAL --ignorefile .trivyignore -q docker examples/terraform
+          bin/trivy config --severity HIGH,CRITICAL --ignorefile .trivyignore -q -f json -o config.json docker examples/terraform
+          python3 - <<'PY'
+          import json, sys
+          found = [(r["Target"], m) for r in json.load(open("config.json")).get("Results", []) for m in r.get("Misconfigurations") or []]
+          for target, m in found:
+              print(f"::error title=Trivy config {m['Severity']}::{target}: {m['ID']} {m['Title']}. {m.get('Resolution', '')}")
+          sys.exit(1 if found else 0)
+          PY
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         if: always()
         with:
@@ -139,3 +148,4 @@ jobs:
             sbom.cdx.json
             grype.json
             trivy.json
+            config.json

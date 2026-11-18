@@ -7,6 +7,10 @@ FROM python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1 PIP_DISABLE_PIP_VERSION_CHECK=1
 COPY docker/requirements.txt /tmp/requirements.txt
 COPY dist/ /tmp/dist/
+# Debian security fixes that are out but not yet in the base image (the scan found one in zlib, 2026-11-18)
+RUN apt-get update \
+ && apt-get upgrade -y --no-install-recommends \
+ && rm -rf /var/lib/apt/lists/*
 RUN pip install --require-hashes -r /tmp/requirements.txt \
  && pip install --no-deps /tmp/dist/tesseraline_airlock-*.whl \
  && rm -rf /tmp/requirements.txt /tmp/dist \
