@@ -16,13 +16,14 @@ holds no secrets and can reach only the model and the gateway.
 | policies | `tools.rego` (which agent, which tool, which arguments, limits) and `egress.rego` (which hosts), with tests | files in `policies/` |
 | example | agent, gateway, two OPA instances, Envoy, Vault in dev mode, a small `demo-api`, an optional local model, separate networks; a script that creates a local CA and the certificates | `examples/terraform/docker/` |
 
-The gateway's only runtime dependency is `tesseraline-invariants` (pinned `>=0.0.3,<0.1`), which itself needs
-nothing outside the standard library. Every value read from the secret store is held as a `Secret`. Five functions
-build text that leaves the gateway, and each carries `@invariant(never_contains(Secret))`. They build the response
-to the agent, the error message and the entries of the three logs. `invariants check` runs in CI against a
-committed `invariants.lock`. This check runs on generated inputs at test time. The runtime scrubbing of known secret
-values stays in place for every call. When airlock needs a feature that invariants lacks, the feature is added to
-invariants first and released there.
+The gateway's only runtime dependency is `tesseraline-invariants` (pinned `>=0.0.4,<0.1`), which itself needs
+nothing outside the standard library. Every value read from the secret store sits in a field marked `Secret[str]`,
+in a record whose printed form leaves the value out. Five functions build text that leaves the gateway, and each
+carries `@invariant(never_contains(Secret))`. They build the response to the agent, the error message and the
+entries of the three logs. `invariants check` runs in CI against a committed `invariants.lock`: it plants a
+canary in each marked field or parameter, calls the function on generated inputs and searches the built text for
+it. That check runs at test time; the runtime scrubbing of known secret values stays in place for every call. When
+airlock needs a feature that invariants lacks, the feature is added to invariants first and released there.
 
 ## Gateway API
 
@@ -41,8 +42,17 @@ GET  /healthz        ->  200 when the policy engine answers
 
 ## Certificates
 
-Every internal connection uses mutual TLS: agent to gateway, gateway to OPA, gateway to Vault and gateway to the
-egress proxy. The README carries a table of each file, its path, the environment variable that points to it, who
+Every internal connection uses mutual TLS:
+
+- agent to gateway
+- gateway to the tools policy engine
+- gateway to the secret store
+- gateway to the egress proxy
+
+The link from the egress proxy to its own policy engine is the exception: the policy plugin's gRPC server does not
+offer TLS, so that link runs on a network only the two of them share.
+
+The README carries a table of each file, its path, the environment variable that points to it, who
 issues it and how long it is valid. Certificates are short-lived. The gateway loads new ones on restart or on
 SIGHUP. The example creates a local CA and the certificates with a script and keeps the private keys in a folder
 that git ignores. It does not use Terraform's `tls` provider, because that provider stores private keys in the
@@ -126,8 +136,7 @@ Each log is a `Sink`. The default sink writes JSON Lines to its own file or stre
 | `error` | gateway | the exception class, if any |
 
 Fields that come from the agent are stored under a `reported` key or named as such, because the agent is not
-trusted. The agent's identity always comes from its client certificate. Argument and output content is off by default. An
-operator can turn it on per tool; the content is scrubbed and cut to a size limit before it is written.
+trusted. The agent's identity always comes from its client certificate. Argument and output content is not recorded.
 
 A small command line reader works on the same file:
 
@@ -171,11 +180,12 @@ reason and a date.
 | Version | Scope |
 |---|---|
 | 0.0.1 | gateway, policies, local Terraform example, docs, CI |
-| 0.1 | official image on GHCR, signed, with SBOM |
+| 0.1 | tools offered over MCP with the same policy and audit; configurable SPIFFE trust domain and an `AgentIdentity` interface, so certificates can come from SPIRE; human approval for high-risk calls (the policy answers `ask`, a person with an approver certificate confirms the exact arguments); an example adapter for the `Redactor` interface; official image on GHCR, signed, with SBOM |
 | 0.2 | AWS example: container service, managed secrets, workload role, egress through the proxy, metadata address blocked |
 | 0.3 | Azure example: container apps, key vault, managed identity |
 
 ## Decisions
 
-- A human approval hook for chosen tools (the policy returns "ask" and a person confirms) comes after 0.0.1.
+- Human approval, MCP and the identity interface come in 0.1, each with its own review and threat model update.
+  The `Redactor` interface for personal data and the token budget are in 0.0.1.
 - Mutual TLS for agent identity, from 0.0.1 (decided). The certificate table is part of the README.

@@ -1,0 +1,93 @@
+# The only way out. The gateway connects with mutual TLS and names the destination in the Host header; ext_authz
+# asks opa-egress first (no answer = refused); Envoy then opens a TLS connection to the destination and checks its
+# certificate against the public CAs and the example CA.
+static_resources:
+  listeners:
+    - name: egress
+      address: {socket_address: {address: 0.0.0.0, port_value: 10000}}
+      filter_chains:
+        - transport_socket:
+            name: envoy.transport_sockets.tls
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.DownstreamTlsContext
+              require_client_certificate: true
+              common_tls_context:
+                tls_certificates:
+                  - certificate_chain: {filename: /certs/egress.pem}
+                    private_key: {filename: /certs/egress-key.pem}
+                validation_context:
+                  trusted_ca: {filename: /certs/ca.pem}
+                  match_typed_subject_alt_names:
+                    - san_type: URI
+                      matcher: {exact: "spiffe://airlock/gateway"}
+          filters:
+            - name: envoy.filters.network.http_connection_manager
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                stat_prefix: egress
+                normalize_path: true          # /a/../b and %2e%2e are resolved before the policy sees the path
+                merge_slashes: true
+                path_with_escaped_slashes_action: REJECT_REQUEST
+                stream_idle_timeout: 60s      # a quiet connection is closed; a long model stream is not
+                access_log:
+                  - name: envoy.access_loggers.stdout
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StdoutAccessLog
+                      log_format:
+                        text_format_source:
+                          inline_string: "%START_TIME% %REQ(:METHOD)% %REQ(:AUTHORITY)% %RESPONSE_CODE% %RESPONSE_FLAGS% %DURATION%ms\n"
+                route_config:
+                  name: all
+                  virtual_hosts:
+                    - name: all
+                      domains: ["*"]
+                      routes:
+                        - match: {prefix: "/"}
+                          route: {cluster: dynamic_forward_proxy, timeout: 0s}
+                http_filters:
+                  - name: envoy.filters.http.ext_authz
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthz
+                      transport_api_version: V3
+                      failure_mode_allow: false
+                      grpc_service: {envoy_grpc: {cluster_name: opa_egress}, timeout: 1s}
+                  - name: envoy.filters.http.dynamic_forward_proxy
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.dynamic_forward_proxy.v3.FilterConfig
+                      dns_cache_config: {name: dns, dns_lookup_family: V4_ONLY}
+                  - name: envoy.filters.http.router
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+  clusters:
+    - name: dynamic_forward_proxy
+      lb_policy: CLUSTER_PROVIDED
+      cluster_type:
+        name: envoy.clusters.dynamic_forward_proxy
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.clusters.dynamic_forward_proxy.v3.ClusterConfig
+          dns_cache_config: {name: dns, dns_lookup_family: V4_ONLY}
+      typed_extension_protocol_options:
+        envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+          "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+          upstream_http_protocol_options: {auto_sni: true, auto_san_validation: true}
+          explicit_http_config: {http_protocol_options: {}}
+      transport_socket:
+        name: envoy.transport_sockets.tls
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
+          common_tls_context:
+            validation_context:
+              trusted_ca: {filename: /certs/upstream-ca.pem}
+    - name: opa_egress
+      type: STRICT_DNS
+      typed_extension_protocol_options:
+        envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+          "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+          explicit_http_config: {http2_protocol_options: {}}
+      load_assignment:
+        cluster_name: opa_egress
+        endpoints:
+          - lb_endpoints:
+              - endpoint: {address: {socket_address: {address: opa-egress, port_value: 9191}}}
+admin:
+  address: {socket_address: {address: 127.0.0.1, port_value: 9901}}

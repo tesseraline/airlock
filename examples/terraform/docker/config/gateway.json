@@ -1,0 +1,9 @@
+{
+  "private_hosts": ["demo-api"],
+  "credentials": {
+    "demo-api:8443": {"header": "Authorization", "secret": "demo-api", "template": "Bearer {secret}"}
+  },
+  "model_routes": {
+    "demo": {"upstream": "https://demo-api:8443", "secret": "model-demo", "header": "x-api-key", "template": "{secret}"}
+  }
+}

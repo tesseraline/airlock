@@ -1,0 +1,5 @@
+{"function": "tesseraline_airlock.records:audit_entry", "id": "tesseraline_airlock.records:audit_entry#never_contains:ddc03c37", "kind": "never_contains", "params": {"markers": "Secret"}}
+{"function": "tesseraline_airlock.records:developer_entry", "id": "tesseraline_airlock.records:developer_entry#never_contains:ddc03c37", "kind": "never_contains", "params": {"markers": "Secret"}}
+{"function": "tesseraline_airlock.records:error_body", "id": "tesseraline_airlock.records:error_body#never_contains:ddc03c37", "kind": "never_contains", "params": {"markers": "Secret"}}
+{"function": "tesseraline_airlock.records:observability_entry", "id": "tesseraline_airlock.records:observability_entry#never_contains:ddc03c37", "kind": "never_contains", "params": {"markers": "Secret"}}
+{"function": "tesseraline_airlock.records:response_body", "id": "tesseraline_airlock.records:response_body#never_contains:ddc03c37", "kind": "never_contains", "params": {"markers": "Secret"}}

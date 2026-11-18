@@ -1,0 +1,6 @@
+{
+  "hosts": {
+    "example.com": ["GET"],
+    "demo-api:8443": ["GET", "POST"]
+  }
+}

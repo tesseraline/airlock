@@ -1,0 +1,112 @@
+# Every push and pull request: the package, the policies, the Terraform example and the gateway image.
+# Third-party binaries are downloaded by exact version and checked against a SHA-256 fixed in this file before
+# they run; Trivy's release signature is also checked with Sigstore. No job here has write access or secrets.
+name: ci
+
+on:
+  push:
+    branches: [production, staging, development]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  OPA_VERSION: "1.22.4"
+  OPA_SHA256: "35e3b352e715e80624ead6c89930d8585f6f7d94cdc409eb2a9fe36620dcccba"
+  TERRAFORM_VERSION: "1.17.2"
+  TERRAFORM_SHA256: "e6f16b2f0b137ee5729caa8c4e79a3bae4ee261acd198a1fcfa8584a6296605b"
+  SYFT_VERSION: "1.57.1"
+  SYFT_SHA256: "bf52519eb57f675d47c07d43213cb6dff6449f3d6d1147ff6701ed91f44eef0c"
+  GRYPE_VERSION: "0.121.3"
+  GRYPE_SHA256: "e9da18cc1429e786722e32161288103600efffd8e483c90761f90485bd1bec85"
+  TRIVY_VERSION: "0.76.2"
+  TRIVY_SHA256: "bc0fc726e017b8927a62b2d3531d7a84ee01769daf5c99ed866dced54089fdbf"
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
+      - run: uv sync --locked
+      - run: uv run ruff check . && uv run ruff format --check .
+      - run: uv run mypy src
+      - run: uv run pytest -q
+      - name: promises about secrets (tesseraline-invariants)
+        run: uv run invariants check
+      - name: known vulnerabilities in the locked dependencies
+        run: |
+          uv export --frozen --all-groups --no-emit-project --no-hashes --format requirements-txt > deps.txt
+          uvx "pip-audit==2.10.1" -r deps.txt --no-deps --disable-pip --progress-spinner off
+
+  policies:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: opa ${{ env.OPA_VERSION }}
+        run: |
+          curl -sSfL -o opa "https://github.com/open-policy-agent/opa/releases/download/v${OPA_VERSION}/opa_linux_amd64_static"
+          echo "${OPA_SHA256}  opa" | sha256sum -c -
+          chmod +x opa
+      - run: ./opa fmt --list --fail policies
+      - run: ./opa check policies/tools policies/egress policies/opa-system
+      - run: ./opa test policies/tools policies/egress -v
+
+  terraform:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: terraform ${{ env.TERRAFORM_VERSION }}
+        run: |
+          curl -sSfL -o tf.zip "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_amd64.zip"
+          echo "${TERRAFORM_SHA256}  tf.zip" | sha256sum -c -
+          unzip -q tf.zip terraform
+      - name: format and validate the example
+        working-directory: examples/terraform/docker
+        run: |
+          ../../../terraform fmt -check -recursive
+          ../../../terraform init -backend=false -input=false -lockfile=readonly
+          ../../../terraform validate
+
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
+      - name: scanners, checked before they run
+        run: |
+          mkdir -p bin
+          curl -sSfL -o syft.tgz "https://github.com/anchore/syft/releases/download/v${SYFT_VERSION}/syft_${SYFT_VERSION}_linux_amd64.tar.gz"
+          curl -sSfL -o grype.tgz "https://github.com/anchore/grype/releases/download/v${GRYPE_VERSION}/grype_${GRYPE_VERSION}_linux_amd64.tar.gz"
+          curl -sSfL -o trivy.tgz "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          curl -sSfL -o trivy.tgz.sigstore.json "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz.sigstore.json"
+          printf '%s  syft.tgz\n%s  grype.tgz\n%s  trivy.tgz\n' "$SYFT_SHA256" "$GRYPE_SHA256" "$TRIVY_SHA256" | sha256sum -c -
+          uvx "sigstore==4.5.1" verify github --repository aquasecurity/trivy --ref "refs/tags/v${TRIVY_VERSION}" --bundle trivy.tgz.sigstore.json trivy.tgz
+          for t in syft grype trivy; do tar -xzf "$t.tgz" -C bin "$t"; done
+      - name: build the gateway image
+        run: |
+          uv export --no-dev --no-emit-project --format requirements-txt -q > docker/requirements.txt
+          git diff --exit-code docker/requirements.txt   # the committed requirements match the lock
+          uv build --wheel -q
+          docker build -q -f docker/Dockerfile -t airlock-gateway:ci .
+      - name: SBOM (Syft)
+        run: bin/syft airlock-gateway:ci -o cyclonedx-json=sbom.cdx.json -q
+      - name: image vulnerabilities, first scanner (Grype)
+        run: bin/grype sbom:sbom.cdx.json --only-fixed --fail-on high --config .grype.yaml
+      - name: image vulnerabilities, second scanner (Trivy)
+        run: bin/trivy image --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 --ignorefile .trivyignore airlock-gateway:ci
+      - name: configuration (Dockerfile and Terraform)
+        run: bin/trivy config --severity HIGH,CRITICAL --exit-code 1 --ignorefile .trivyignore docker examples/terraform
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: sbom
+          path: sbom.cdx.json
