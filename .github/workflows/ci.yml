@@ -102,12 +102,40 @@ jobs:
       - name: SBOM (Syft)
         run: bin/syft airlock-gateway:ci -o cyclonedx-json=sbom.cdx.json -q
       - name: image vulnerabilities, first scanner (Grype)
-        run: bin/grype sbom:sbom.cdx.json --only-fixed --fail-on high --config .grype.yaml
+        run: |
+          bin/grype sbom:sbom.cdx.json --only-fixed --config .grype.yaml -o table
+          bin/grype sbom:sbom.cdx.json --only-fixed --config .grype.yaml -o json --file grype.json
+          # one annotation per fixable HIGH or CRITICAL finding, visible on the run page; any of them fails the job
+          python3 - <<'PY'
+          import json, sys
+          found = [m for m in json.load(open("grype.json"))["matches"]
+                   if m["vulnerability"]["severity"] in ("High", "Critical")]
+          for m in found:
+              v, a = m["vulnerability"], m["artifact"]
+              fixed = ", ".join(v.get("fix", {}).get("versions", []))
+              print(f"::error title=Grype {v['severity']}::{a['name']} {a['version']} ({a['type']}): {v['id']}, fixed in {fixed}")
+          sys.exit(1 if found else 0)
+          PY
       - name: image vulnerabilities, second scanner (Trivy)
-        run: bin/trivy image --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 --ignorefile .trivyignore airlock-gateway:ci
+        if: always()
+        run: |
+          bin/trivy image --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed --ignorefile .trivyignore -q airlock-gateway:ci
+          bin/trivy image --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed --ignorefile .trivyignore -q -f json -o trivy.json airlock-gateway:ci
+          python3 - <<'PY'
+          import json, sys
+          found = [(r["Target"], v) for r in json.load(open("trivy.json")).get("Results", []) for v in r.get("Vulnerabilities") or []]
+          for target, v in found:
+              print(f"::error title=Trivy {v['Severity']}::{v['PkgName']} {v['InstalledVersion']} ({target}): {v['VulnerabilityID']}, fixed in {v.get('FixedVersion', '')}")
+          sys.exit(1 if found else 0)
+          PY
       - name: configuration (Dockerfile and Terraform)
+        if: always()
         run: bin/trivy config --severity HIGH,CRITICAL --exit-code 1 --ignorefile .trivyignore docker examples/terraform
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        if: always()
         with:
-          name: sbom
-          path: sbom.cdx.json
+          name: scan-results
+          path: |
+            sbom.cdx.json
+            grype.json
+            trivy.json
