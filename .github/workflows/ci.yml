@@ -23,6 +23,7 @@ env:
   GRYPE_SHA256: "e9da18cc1429e786722e32161288103600efffd8e483c90761f90485bd1bec85"
   TRIVY_VERSION: "0.76.2"
   TRIVY_SHA256: "bc0fc726e017b8927a62b2d3531d7a84ee01769daf5c99ed866dced54089fdbf"
+  TRIVY_FLAGS: "--disable-telemetry --skip-version-check"   # nothing sent to the vendor
 
 jobs:
   package:
@@ -119,8 +120,8 @@ jobs:
       - name: image vulnerabilities, second scanner (Trivy)
         if: always()
         run: |
-          bin/trivy image --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed --ignorefile .trivyignore -q airlock-gateway:ci
-          bin/trivy image --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed --ignorefile .trivyignore -q -f json -o trivy.json airlock-gateway:ci
+          bin/trivy image $TRIVY_FLAGS --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed --ignorefile .trivyignore -q airlock-gateway:ci
+          bin/trivy image $TRIVY_FLAGS --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed --ignorefile .trivyignore -q -f json -o trivy.json airlock-gateway:ci
           python3 - <<'PY'
           import json, sys
           found = [(r["Target"], v) for r in json.load(open("trivy.json")).get("Results", []) for v in r.get("Vulnerabilities") or []]
@@ -131,11 +132,15 @@ jobs:
       - name: configuration (Dockerfile and Terraform)
         if: always()
         run: |
-          bin/trivy config --severity HIGH,CRITICAL --ignorefile .trivyignore -q docker examples/terraform
-          bin/trivy config --severity HIGH,CRITICAL --ignorefile .trivyignore -q -f json -o config.json docker examples/terraform
+          # trivy config takes one folder at a time
+          for dir in docker examples/terraform; do
+            bin/trivy config $TRIVY_FLAGS --severity HIGH,CRITICAL --ignorefile .trivyignore -q "$dir"
+            bin/trivy config $TRIVY_FLAGS --severity HIGH,CRITICAL --ignorefile .trivyignore -q -f json -o "config-${dir##*/}.json" "$dir"
+          done
           python3 - <<'PY'
-          import json, sys
-          found = [(r["Target"], m) for r in json.load(open("config.json")).get("Results", []) for m in r.get("Misconfigurations") or []]
+          import glob, json, sys
+          found = [(r["Target"], m) for f in sorted(glob.glob("config-*.json")) for r in json.load(open(f)).get("Results", [])
+                   for m in r.get("Misconfigurations") or []]
           for target, m in found:
               print(f"::error title=Trivy config {m['Severity']}::{target}: {m['ID']} {m['Title']}. {m.get('Resolution', '')}")
           sys.exit(1 if found else 0)
@@ -148,4 +153,4 @@ jobs:
             sbom.cdx.json
             grype.json
             trivy.json
-            config.json
+            config-*.json
