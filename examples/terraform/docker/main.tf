@@ -38,7 +38,7 @@ locals {
     opaenvo = "openpolicyagent/opa@sha256:6ce6563695665a4c06338832e0a532c4dbf16f7beea05386ad0a6eb91d9e8593"
     envoy   = "envoyproxy/envoy@sha256:1fde8efee875e4e4f6a39a90fe49d9338e1caacce5762034ef9fb4bbb9ad6aed"
     vault   = "hashicorp/vault@sha256:dfa48c2fa2b0099ccb47681ec5c4804bf5aec9d6879ecfee07ad4b92a5427ad6"
-    python  = "python@sha256:2f17fc044b579bab302c2e8054d3a686e2cb9a83de48e70534b94cd8ebbe06a9"
+    python  = "python@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b"
   }
 }
 
