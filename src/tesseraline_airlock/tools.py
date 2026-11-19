@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import importlib
+import re
+import unicodedata
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
@@ -39,21 +41,70 @@ class Tool:
     function: ToolFunction
     description: str = ""
     prepare: Prepare | None = None  # normalises the arguments once; the policy and the tool see the result
+    schema: dict[str, object] = field(default_factory=lambda: {"type": "object"})  # JSON Schema of the arguments
 
 
 def tool(
-    name: str | None = None, *, description: str = "", prepare: Prepare | None = None
+    name: str | None = None,
+    *,
+    description: str = "",
+    prepare: Prepare | None = None,
+    schema: dict[str, object] | None = None,
 ) -> Callable[[ToolFunction], Tool]:
     """Mark a function as a tool. The function gets the arguments and a `ToolContext` and returns text.
 
     `prepare` may normalise the arguments (raise `ValueError` to refuse them); the policy is asked about the
-    prepared arguments and the tool receives the same.
+    prepared arguments and the tool receives the same. `schema` describes the arguments for MCP clients.
     """
 
     def wrap(function: ToolFunction) -> Tool:
-        return Tool(name or function.__name__, function, description or (function.__doc__ or "").strip(), prepare)
+        text = description or (function.__doc__ or "").strip()
+        return Tool(name or function.__name__, function, text, prepare, schema or {"type": "object"})
 
     return wrap
+
+
+MAX_DESCRIPTION = 1000
+
+
+TOOL_NAME = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
+MAX_LINES = 12
+
+
+def _check_text(where: str, text: str) -> None:
+    folded = unicodedata.normalize("NFKC", text)  # fullwidth and similar look-alikes become their plain form
+    if len(text) > MAX_DESCRIPTION:
+        raise ValueError(f"{where}: longer than {MAX_DESCRIPTION} characters")
+    if text.count("\n") >= MAX_LINES:
+        raise ValueError(f"{where}: more than {MAX_LINES} lines")
+    if any(not c.isprintable() and c != "\n" for c in text):
+        raise ValueError(f"{where}: control characters")
+    if any(c in folded for c in "<>`") or any(line.lstrip().startswith("#") for line in folded.splitlines()):
+        raise ValueError(f"{where}: markup")
+
+
+def _strings(value: object) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        return [s for k, v in value.items() for s in (*_strings(k), *_strings(v))]
+    if isinstance(value, list):
+        return [s for item in value for s in _strings(item)]
+    return []
+
+
+def check_description(t: Tool) -> None:
+    """Refuse a tool whose name, description or argument schema could carry instructions in disguise (threat M2).
+
+    The name must be letters, digits, `_`, `-` or `.`. Every string in the description and the schema is checked
+    after Unicode folding: no control characters, no markup (`<`, `>`, backticks, Markdown headings), at most
+    MAX_DESCRIPTION characters and MAX_LINES lines. A failure raises ValueError, so the gateway does not start.
+    """
+    if not TOOL_NAME.match(t.name):
+        raise ValueError(f"tool {t.name[:64]!r}: name must be letters, digits, '_', '-' or '.'")
+    _check_text(f"tool {t.name}: description", t.description)
+    for text in _strings(t.schema):
+        _check_text(f"tool {t.name}: schema", text)
 
 
 def load(module: str) -> list[Tool]:

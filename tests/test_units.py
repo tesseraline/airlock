@@ -139,3 +139,23 @@ def test_token_meter_sums_the_last_hour():
     assert meter.used("a", now=60) == 50
     assert meter.used("a", now=120) == 20
     assert meter.used("b") == 0
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://github.com/tesseraline/../evil",
+        "https://github.com/tesseraline/./x",
+        "https://github.com//evil",
+        "https://github.com/tesseraline/%2e%2e/evil",
+        "https://github.com/tesseraline%2fevil",
+        "https://a.example/x%5Cy",
+    ],
+)
+def test_paths_that_could_mean_two_things_are_refused(url):
+    with pytest.raises(EgressRefusedError, match="path"):
+        normalise(url)
+
+
+def test_ordinary_encoded_paths_stay():
+    assert normalise("https://example.com/a%20b/c?q=%2e").path == "/a%20b/c?q=%2e"

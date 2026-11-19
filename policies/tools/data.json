@@ -1,9 +1,12 @@
 {
-  "version": "example-1",
+  "version": "example-2",
   "agents": {
     "researcher": {
       "tools": ["fetch", "model:demo"],
-      "fetch_hosts": ["example.com", "demo-api:8443"],
+      "fetch": {
+        "allow": ["https://example.com", "https://demo-api:8443", "https://github.com/tesseraline", "https://api.github.com/users/tesseraline/repos/"],
+        "deny": ["https://example.com/blog", "https://example.com/about-us"]
+      },
       "models": ["demo-1"],
       "tokens_per_hour": 50000
     }

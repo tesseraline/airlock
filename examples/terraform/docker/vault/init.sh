@@ -1,6 +1,6 @@
 #!/bin/sh
-# Runs inside the Vault container against its local dev listener: cert login for the gateway, a read-only policy
-# for its secrets, and the two example secrets. Dev mode keeps everything in memory: a restart needs this again.
+# Runs inside the Vault container at every start, against its local dev listener: cert login for the gateway, a
+# read-only policy for its secrets, and the two example secrets. Dev mode keeps everything in memory.
 set -eu
 export VAULT_ADDR=http://127.0.0.1:8201
 until vault status >/dev/null 2>&1; do sleep 1; done

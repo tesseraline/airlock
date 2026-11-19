@@ -2,7 +2,7 @@
 
 [project]
 name = "tesseraline-airlock"
-version = "0.0.1"
+version = "0.1.0"
 description = "A gateway for LLM agent tools: every call checked by policy, secrets kept from the agent, egress allowlisted."
 readme = "README.md"
 requires-python = ">=3.12"

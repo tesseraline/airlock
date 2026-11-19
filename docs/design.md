@@ -148,6 +148,42 @@ $ airlock obs tail             # new records as they arrive, formatted
 
 Calls to a local model do not pass the gateway, so for them the model name is the one the agent reports.
 
+## MCP (0.1, part A)
+
+Airlock offers the gateway's own tools over the Model Context Protocol, so any MCP client can use them with the same
+policy, audit and limits as `/v1/call`. Part B, a gateway in front of other MCP servers, follows later.
+
+```text
+ MCP client ──stdio──► airlock mcp-bridge ──mTLS, MCP over HTTP──► gateway /mcp ──► policy, audit, tool
+ (any app)             (on the client's machine)                   (modern MCP only)
+```
+
+**Gateway.** `POST /mcp` speaks MCP revision 2026-07-28 only: stateless, the version in each request's `_meta`, no
+sessions. It answers `server/discover`, `tools/list` and `tools/call`. Any other version gets
+`UnsupportedProtocolVersionError` listing the supported one; JSON-RPC batches are refused.
+
+- `tools/list` shows an agent only the tools the policy gives it. The gateway asks the policy for the agent's tool
+  list; the policy data stays the one source.
+- `tools/call` runs through the same steps as `/v1/call`: normalised arguments, the policy, the audit record, the
+  tool, secret scrubbing, the optional redactor, the observability record. A refusal comes back as a tool result with
+  `isError: true` and the policy's reason.
+- Tool names, descriptions and input schemas come only from the gateway's own code. Every string in them is checked
+  when the gateway starts, after Unicode folding: no control characters, no markup, limits on length and lines.
+
+**Bridge.** `airlock mcp-bridge` is an MCP server on stdio that the client starts locally. It forwards each request
+to the gateway over mutual TLS. It serves both modern clients and legacy ones that open with `initialize` (revision
+2025-11-25 and earlier): it answers `initialize` itself from the gateway's `server/discover` result and adds the
+modern `_meta` to every request it forwards. The bridge opens no network port and keeps no state beyond the
+legacy handshake.
+
+**Credentials.** Where the bridge gets its client certificate is the integrator's choice: a file (the default,
+reloaded when it changes), short-lived certificates from SPIRE, or a certificate the integrator's own system issues
+after its login (OIDC, OAuth or anything else). The bridge takes them through a `Credentials` interface with one
+method that returns a TLS context. The gateway only ever sees the certificate.
+
+**Tests before anything reaches GitHub:** unit tests for both eras, the bridge against the running example stack,
+and one real MCP client run against the bridge on this machine.
+
 ## Repository layout
 
 ```text

@@ -94,8 +94,8 @@ The second call reaches `demo-api`, a small service in the stack that needs a to
 Vault; `demo-api` echoes it back and the agent sees `Bearer [redacted]`. The third call is refused by the policy.
 The fourth goes through the model route to a pretend model API.
 
-Vault runs in dev mode and keeps its data in memory. After a restart of its container, load the example setup
-again with `docker exec airlock-vault sh /vault/extra/init.sh`. `terraform destroy` removes the stack; `run/` stays.
+Vault runs in dev mode and keeps its data in memory; its container loads the example setup again at every start.
+`terraform destroy` removes the stack; `run/` stays.
 
 ## Certificates
 
@@ -104,17 +104,43 @@ it again to rotate them and send the gateway `SIGHUP` to load the new ones.
 
 | File | Used by | Environment variable | Subject alternative name |
 |---|---|---|---|
-| `ca.pem` | every service, to check the other side | `AIRLOCK_CA` | — |
+| `ca.pem` | every service, to check the other side | `AIRLOCK_CA` | none |
 | `gateway.pem`, `gateway-key.pem` | the gateway, as server and as client | `AIRLOCK_CERT`, `AIRLOCK_KEY` | `URI:spiffe://airlock/gateway`, `DNS:gateway` |
 | `agent.pem`, `agent-key.pem` | the agent | (the agent's own setting) | `URI:spiffe://airlock/agent/<name>` |
 | `opa-tools.pem`, `-key.pem` | the tools policy engine | OPA's `--tls-*` flags | `DNS:opa-tools` |
 | `vault.pem`, `-key.pem` | Vault's TLS listener | `vault/tls.hcl` | `DNS:vault` |
 | `egress.pem`, `-key.pem` | the egress proxy | `envoy/envoy.yaml` | `DNS:egress` |
-| `upstream-ca.pem` | the egress proxy, to check destinations | `envoy/envoy.yaml` | — (public CAs plus the example CA) |
+| `upstream-ca.pem` | the egress proxy, to check destinations | `envoy/envoy.yaml` | none (public CAs plus the example CA) |
 
 The agent's name is the part after `spiffe://airlock/agent/`. A certificate with no such name, or with two, gets
 `403`. A connection without a certificate from the CA is closed during the TLS handshake. In production, issue
 these certificates from your own CA and keep them short-lived.
+
+## From an MCP client
+
+The gateway offers its tools over the Model Context Protocol. An MCP client starts `airlock mcp-bridge` as a local
+process; the bridge talks to the client on stdio and to the gateway over mutual TLS. The client sees only the tools
+the policy gives the agent, and every call goes through the policy, the audit log and the limits, as on `/v1/call`.
+
+A client configuration that starts the bridge:
+
+```json
+{
+  "mcpServers": {
+    "airlock": {
+      "command": "airlock",
+      "args": ["mcp-bridge", "--gateway", "https://gateway.example:8443",
+               "--cert", "/path/agent.pem", "--key", "/path/agent-key.pem", "--ca", "/path/ca.pem"]
+    }
+  }
+}
+```
+
+The bridge serves clients of the current MCP revision (2026-07-28) and older ones that start with `initialize`. The
+gateway itself speaks only the current revision. Where the bridge gets its certificate is up to you. By default it
+reads the files above and loads them again when the certificate changes. MCP does not say which model a client
+uses; `--model NAME` puts it in the observability log, marked as reported. A `Credentials` class can take the
+certificate from SPIRE, or from your own login system once it has issued one.
 
 ## Configuration
 
@@ -122,9 +148,38 @@ The gateway reads its settings from the environment (`airlock --help` lists them
 
 - `AIRLOCK_CONFIG`, a JSON file with the credentials the gateway adds per host and the model routes. See
   `examples/terraform/docker/config/gateway.json`.
-- The policies in `policies/`. `tools/data.json` says which agent may use which tool, hosts, models and limits;
-  `egress/data.json` lists the hosts and methods the proxy lets out. Both are plain JSON. A policy change needs no
-  code change.
+- The policies in `policies/`. `tools/data.json` says which agent may use which tool, addresses, models and limits;
+  `egress/data.json` lists the hosts, methods and paths the proxy lets out. Both are plain JSON. A policy change
+  needs no code change. In the example, with `environment` set to `local` or `dev` (the default is `local`), both
+  policy engines watch their files, so a saved change applies at once. With `-var environment=production` the
+  reload is not allowed (`terraform plan` stops if `opa_reload` is still on): a policy change then goes through a
+  redeploy.
+  A new address usually needs an entry in both files: the tools policy decides what the agent may ask for, and the
+  egress policy decides what may leave.
+
+### Access lists for `fetch`
+
+Each agent gets an `allow` list and a `deny` list of addresses. An address passes when it is under an `allow` entry
+and under no `deny` entry. An entry covers itself and everything below it, at whole path segments only:
+`https://github.com/tesseraline` covers `/tesseraline/airlock`, not `/tesseraline-evil`.
+
+```json
+"fetch": {
+  "allow": ["https://example.com", "https://github.com/tesseraline"],
+  "deny":  ["https://example.com/blog", "https://example.com/about-us"]
+}
+```
+
+This gives the whole of example.com except its blog and about pages, and on GitHub only what is under
+`/tesseraline`. The egress proxy checks the same in `egress/data.json`, by host and path:
+
+```json
+"example.com": {"methods": ["GET"], "deny": ["/blog", "/about-us"]},
+"github.com":  {"methods": ["GET"], "allow": ["/tesseraline"]}
+```
+
+Addresses whose path could be read two ways are refused before the policy sees them: `.` and `..` segments, empty
+segments, and encoded dots, slashes or backslashes.
 
 ## Your own tools
 

@@ -19,7 +19,7 @@ from dataclasses import dataclass, replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import TYPE_CHECKING, ClassVar
 
-from tesseraline_airlock import records
+from tesseraline_airlock import mcp, records
 from tesseraline_airlock.gateway import AuditUnavailableError, Gateway
 from tesseraline_airlock.model import ModelRoute, UsageReader
 from tesseraline_airlock.tls import agent_name, server_context
@@ -159,7 +159,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             try:
                 body = json.loads(raw or b"{}")
-            except ValueError:
+            except (ValueError, RecursionError):
                 body = None
             if not isinstance(body, dict):
                 self._send(400, records.error_body(uuid.uuid4().hex[:16], 400, "body is not a JSON object"))
@@ -168,6 +168,24 @@ class Handler(BaseHTTPRequestHandler):
             self._send(status, text)
         elif self.path.startswith("/v1/model/"):
             self._model(agent, session)
+        elif self.path == "/mcp":
+            raw = self._body(MAX_TOOL_BODY)
+            if raw is None:
+                return
+            status, text = mcp.handle(
+                self.gateway,
+                agent,
+                raw,
+                self.headers.get("MCP-Protocol-Version", ""),
+                session,
+                self.headers.get("X-Airlock-Model", ""),
+            )
+            if status == 202:  # noqa: PLR2004 - a notification gets no body
+                self.send_response(202)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+            else:
+                self._send(status, text)
         else:
             self._drain()
             self._send(404, records.error_body(uuid.uuid4().hex[:16], 404, "not found"))

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import http.client
 import ipaddress
+import re
 import socket
 import ssl
 import urllib.parse
@@ -16,6 +17,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
+ENCODED = re.compile(r"%(2e|2f|5c)", re.IGNORECASE)
 Resolver = Callable[..., list[Any]]  # socket.getaddrinfo, or a stand-in for tests
 
 
@@ -72,7 +74,12 @@ def normalise(url: str) -> Target:
     else:
         raise EgressRefusedError("an address instead of a host name")
     port = parts.port or 443
-    path = (parts.path or "/") + (f"?{parts.query}" if parts.query else "")
+    raw_path = parts.path or "/"
+    # path rules in the policy compare prefixes, so a path must mean one thing: no "." or ".." segments, no empty
+    # segments, no encoded dot, slash or backslash that a server might decode into one of them
+    if "//" in raw_path or any(segment in (".", "..") for segment in raw_path.split("/")) or ENCODED.search(raw_path):
+        raise EgressRefusedError("path with dot segments, empty segments or encoded separators")
+    path = raw_path + (f"?{parts.query}" if parts.query else "")
     return Target(host, port, path)
 
 

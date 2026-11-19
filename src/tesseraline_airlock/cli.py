@@ -151,12 +151,26 @@ def main(argv: list[str] | None = None) -> int:
     obs_p.add_argument("what", choices=["summary", "session", "tail"])
     obs_p.add_argument("session", nargs="?")
     obs_p.add_argument("--log-dir", default=os.environ.get("AIRLOCK_LOG_DIR", "/var/log/airlock"))
+    bridge_p = sub.add_parser("mcp-bridge", help="an MCP server on stdio that forwards to the gateway")
+    bridge_p.add_argument("--gateway", default=os.environ.get("AIRLOCK_GATEWAY", "https://localhost:8443"))
+    bridge_p.add_argument("--cert", default=os.environ.get("AIRLOCK_BRIDGE_CERT", ""), help="the agent's certificate")
+    bridge_p.add_argument("--key", default=os.environ.get("AIRLOCK_BRIDGE_KEY", ""), help="the agent's key")
+    bridge_p.add_argument("--ca", default=os.environ.get("AIRLOCK_BRIDGE_CA", ""), help="the CA that signs the gateway")
+    bridge_p.add_argument(
+        "--model",
+        default=os.environ.get("AIRLOCK_BRIDGE_MODEL", ""),
+        help="the model this client uses, logged as reported (MCP does not carry it)",
+    )
     audit_p = sub.add_parser("audit", help="check the audit log's hash chain")
     audit_p.add_argument("what", choices=["verify"])
     audit_p.add_argument("--log-dir", default=os.environ.get("AIRLOCK_LOG_DIR", "/var/log/airlock"))
     args = parser.parse_args(argv)
     if args.command == "serve":
         serve(args.tools)
+    elif args.command == "mcp-bridge":
+        from tesseraline_airlock.mcp_bridge import main as bridge
+
+        return bridge(args.gateway, args.cert, args.key, args.ca, args.model)
     elif args.command == "obs":
         obs(args.what, args.session, Path(args.log_dir))
     else:

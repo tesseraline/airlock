@@ -51,4 +51,10 @@ def make_fetch(credentials: Mapping[str, HostCredential] | None = None, limit: i
         text = reply.body.decode("utf-8", "replace")
         return f"HTTP {reply.status}\n{text}" + ("\n[cut]" if reply.truncated else "")
 
-    return Tool("fetch", fetch, "Download a page over https from an allowed host.", prepare)
+    schema: dict[str, object] = {
+        "type": "object",
+        "properties": {"url": {"type": "string", "description": "An https URL on a host the policy allows."}},
+        "required": ["url"],
+        "additionalProperties": False,
+    }
+    return Tool("fetch", fetch, "Download a page over https from an allowed host.", prepare, schema)

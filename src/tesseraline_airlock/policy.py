@@ -30,6 +30,10 @@ class Policy(Protocol):
         """Tell whether the policy engine answers."""
         ...
 
+    def tools_for(self, agent: str) -> list[str]:
+        """The tools the agent may see (for MCP tools/list); empty on any failure."""
+        ...
+
 
 class OpaPolicy:
     """Open Policy Agent over HTTPS with mutual TLS.
@@ -65,6 +69,19 @@ class OpaPolicy:
             return Decision(False, "policy gave no decision")
         reason = str(result.get("reason", "")) or ("allowed" if result["allow"] else "refused")
         return Decision(result["allow"], reason, str(result.get("version", "")))
+
+    def tools_for(self, agent: str) -> list[str]:
+        """Ask the same decision path with `kind: list`; any failure lists nothing (fail closed)."""
+        body = json.dumps({"input": {"kind": "list", "agent": agent}}).encode()
+        try:
+            http = urllib.request.Request(self._url, body, {"Content-Type": "application/json"})  # noqa: S310
+            with self._opener.open(http, timeout=self._timeout) as response:
+                answer = json.loads(response.read())
+        except Exception:
+            return []
+        result = answer.get("result") if isinstance(answer, dict) else None
+        tools = result.get("tools") if isinstance(result, dict) else None
+        return [t for t in tools if isinstance(t, str)] if isinstance(tools, list) else []
 
     def healthy(self) -> bool:
         """`GET /health` on the OPA server."""

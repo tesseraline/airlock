@@ -1,6 +1,8 @@
 {
   "hosts": {
-    "example.com": ["GET"],
-    "demo-api:8443": ["GET", "POST"]
+    "example.com": {"methods": ["GET"], "deny": ["/blog", "/about-us"]},
+    "demo-api:8443": {"methods": ["GET", "POST"]},
+    "github.com": {"methods": ["GET"], "allow": ["/tesseraline"]},
+    "api.github.com": {"methods": ["GET"], "allow": ["/users/tesseraline/repos"]}
   }
 }

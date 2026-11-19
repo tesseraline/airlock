@@ -43,6 +43,9 @@ class FakePolicy:
     def healthy(self):
         return self.up
 
+    def tools_for(self, agent):
+        return sorted(self.allowed) if self.up else []
+
 
 @pytest.fixture
 def https_server(certs: Path) -> Iterator[callable]:

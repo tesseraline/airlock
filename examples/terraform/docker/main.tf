@@ -18,6 +18,22 @@ variable "run_dir" {
   default     = null
 }
 
+variable "environment" {
+  type        = string
+  default     = "local"
+  description = "local, dev or production. Production never reloads policies from files."
+  validation {
+    condition     = contains(["local", "dev", "production"], var.environment)
+    error_message = "environment must be local, dev or production."
+  }
+}
+
+variable "opa_reload" {
+  type        = bool
+  default     = true
+  description = "Policy engines reload their files when they change (local and dev only)."
+}
+
 variable "max_connections" {
   type        = number
   default     = 64
@@ -30,9 +46,11 @@ variable "gateway_port" {
 }
 
 locals {
-  here = abspath(path.module)
-  repo = abspath("${path.module}/../../..")
-  run  = coalesce(var.run_dir, "${local.repo}/run")
+  # a saved policy file applies at once in local and dev; production changes policies by redeploying
+  opa_watch = var.opa_reload && var.environment != "production" ? ["--watch"] : []
+  here      = abspath(path.module)
+  repo      = abspath("${path.module}/../../..")
+  run       = coalesce(var.run_dir, "${local.repo}/run")
   images = {
     opa     = "openpolicyagent/opa@sha256:ff50f50332ff9e722ffafe2658c195ced1f9b6d4f3064000c2ecfa8cdf7acccf"
     opaenvo = "openpolicyagent/opa@sha256:6ce6563695665a4c06338832e0a532c4dbf16f7beea05386ad0a6eb91d9e8593"
@@ -99,10 +117,10 @@ resource "docker_container" "opa_tools" {
   }
   security_opts = ["no-new-privileges:true"]
   capabilities { drop = ["ALL"] }
-  command = ["run", "--server", "--addr=0.0.0.0:8181", "--log-level=error",
+  command = concat(["run", "--server"], local.opa_watch, ["--addr=0.0.0.0:8181", "--log-level=error",
     "--tls-cert-file=/certs/opa-tools.pem", "--tls-private-key-file=/certs/opa-tools-key.pem",
     "--tls-ca-cert-file=/certs/ca.pem", "--authentication=tls", "--authorization=basic",
-  "/policy/tools.rego", "/policy/data.json", "/authz/authz.rego"]
+  "/policy/tools.rego", "/policy/data.json", "/authz/authz.rego"])
   volumes {
     host_path      = "${local.run}/certs/opa-tools"
     container_path = "/certs"
@@ -123,6 +141,12 @@ resource "docker_container" "opa_tools" {
     aliases = ["opa-tools"]
   }
   depends_on = [terraform_data.stage]
+  lifecycle {
+    precondition {
+      condition     = !(var.opa_reload && var.environment == "production")
+      error_message = "opa_reload is for local and dev only; in production a policy change goes through a redeploy."
+    }
+  }
 }
 
 # --- the second door: egress proxy and its policy ---
@@ -143,8 +167,8 @@ resource "docker_container" "opa_egress" {
   }
   security_opts = ["no-new-privileges:true"]
   capabilities { drop = ["ALL"] }
-  command = ["run", "--server", "--addr=127.0.0.1:8181", "--log-level=error", "--config-file=/config/opa-egress.yaml",
-  "/policy/egress.rego", "/policy/data.json"]
+  command = concat(["run", "--server"], local.opa_watch, ["--addr=127.0.0.1:8181", "--log-level=error", "--config-file=/config/opa-egress.yaml",
+  "/policy/egress.rego", "/policy/data.json"])
   volumes {
     host_path      = "${local.repo}/policies/egress"
     container_path = "/policy"
@@ -215,9 +239,10 @@ resource "docker_container" "vault" {
   }
   security_opts = ["no-new-privileges:true"]
   capabilities { drop = ["ALL"] }
-  env     = ["SKIP_SETCAP=true", "SKIP_CHOWN=true", "VAULT_DISABLE_MLOCK=true", "HOME=/vault/home"]
-  command = ["server", "-dev", "-dev-listen-address=127.0.0.1:8201", "-config=/vault/extra/tls.hcl"]
-  tmpfs   = { "/vault/home" = "rw,size=1m,uid=100", "/vault/file" = "rw,size=1m,uid=100", "/vault/logs" = "rw,size=1m,uid=100", "/tmp" = "rw,size=8m" }
+  env = ["SKIP_SETCAP=true", "SKIP_CHOWN=true", "VAULT_DISABLE_MLOCK=true", "HOME=/vault/home"]
+  # dev mode keeps everything in memory, so the setup runs on every start, after the server answers
+  entrypoint = ["sh", "-c", "vault server -dev -dev-listen-address=127.0.0.1:8201 -config=/vault/extra/tls.hcl & sh /vault/extra/init.sh && wait"]
+  tmpfs      = { "/vault/home" = "rw,size=1m,uid=100", "/vault/file" = "rw,size=1m,uid=100", "/vault/logs" = "rw,size=1m,uid=100", "/tmp" = "rw,size=8m" }
   volumes {
     host_path      = "${local.here}/vault"
     container_path = "/vault/extra"
@@ -238,13 +263,6 @@ resource "docker_container" "vault" {
     aliases = ["vault"]
   }
   depends_on = [terraform_data.stage]
-}
-
-resource "terraform_data" "vault_init" {
-  triggers_replace = [docker_container.vault.id]
-  provisioner "local-exec" {
-    command = "docker exec airlock-vault sh /vault/extra/init.sh"
-  }
 }
 
 # --- a pretend outside API, reachable only through the egress proxy ---
@@ -335,7 +353,7 @@ resource "docker_container" "gateway" {
   networks_advanced { name = docker_network.internal["policy"].name }
   networks_advanced { name = docker_network.internal["vault"].name }
   networks_advanced { name = docker_network.internal["egress"].name }
-  depends_on = [terraform_data.gateway_image, terraform_data.vault_init, docker_container.opa_tools, docker_container.egress]
+  depends_on = [terraform_data.gateway_image, docker_container.opa_tools, docker_container.egress]
   lifecycle {
     replace_triggered_by = [terraform_data.gateway_image] # a new image means a new container
   }

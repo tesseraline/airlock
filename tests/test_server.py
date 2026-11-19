@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import http.client
+import io
 import json
 import ssl
 import threading
@@ -229,3 +230,142 @@ def test_stream_scrubber_catches_a_secret_split_across_chunks():
     s = StreamScrubber(["sk-ABCDEFGH"])
     out = s.feed(b"data: key=sk-ABC") + s.feed(b"DEFGH end\n") + s.finish()
     assert out == b"data: key=[redacted] end\n"
+
+
+def run_bridge(port, certs, lines):
+    from tesseraline_airlock.mcp_bridge import Bridge, FileCredentials
+
+    bridge = Bridge(
+        f"https://localhost:{port}",
+        FileCredentials(str(certs / "agent.pem"), str(certs / "agent-key.pem"), str(certs / "ca.pem")),
+    )
+    out = io.StringIO()
+    bridge.run(io.BytesIO("".join(json.dumps(m) + "\n" for m in lines).encode()), out)
+    return [json.loads(line) for line in out.getvalue().splitlines()]
+
+
+def test_bridge_serves_a_legacy_client(certs, running):
+    port, echo_port, logs = running
+    answers = run_bridge(
+        port,
+        certs,
+        [
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-06-18",
+                    "capabilities": {},
+                    "clientInfo": {"name": "old", "version": "1"},
+                },
+            },
+            {"jsonrpc": "2.0", "method": "notifications/initialized"},
+            {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
+            {
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "tools/call",
+                "params": {"name": "fetch", "arguments": {"url": f"https://localhost:{echo_port}/items"}},
+            },
+            {"jsonrpc": "2.0", "id": 4, "method": "ping"},
+        ],
+    )
+    assert [a["id"] for a in answers] == [1, 2, 3, 4]  # the notification got no answer
+    assert answers[0]["result"]["protocolVersion"] == "2025-06-18"
+    assert [t["name"] for t in answers[1]["result"]["tools"]] == ["fetch"]
+    assert "resultType" not in answers[1]["result"]  # modern-only fields removed for a legacy client
+    assert "Bearer [redacted]" in answers[2]["result"]["content"][0]["text"]
+    assert logs.observability.records[-1]["client"] == "old"
+
+
+def test_bridge_passes_a_modern_client_through(certs, running):
+    port, _, _ = running
+    meta = {
+        "_meta": {
+            "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+            "io.modelcontextprotocol/clientInfo": {"name": "new", "version": "1"},
+        }
+    }
+    answers = run_bridge(
+        port,
+        certs,
+        [
+            {"jsonrpc": "2.0", "id": "a", "method": "server/discover", "params": meta},
+            {"jsonrpc": "2.0", "id": "b", "method": "tools/list", "params": meta},
+        ],
+    )
+    assert answers[0]["result"]["supportedVersions"] == ["2026-07-28"]
+    assert answers[1]["result"]["resultType"] == "complete"
+
+
+def test_bridge_without_a_reachable_gateway_answers_with_an_error(certs):
+    answers = run_bridge(1, certs, [{"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}}])
+    assert answers[0]["error"]["code"] == -32603
+
+
+def run_bridge_raw(port, certs, data: bytes):
+    from tesseraline_airlock.mcp_bridge import Bridge, FileCredentials
+
+    bridge = Bridge(
+        f"https://localhost:{port}",
+        FileCredentials(str(certs / "agent.pem"), str(certs / "agent-key.pem"), str(certs / "ca.pem")),
+    )
+    out = io.StringIO()
+    bridge.run(io.BytesIO(data), out)
+    return [json.loads(line) for line in out.getvalue().splitlines()]
+
+
+def test_bridge_turns_a_non_json_rpc_gateway_answer_into_an_error_with_the_id(certs, running):
+    from tesseraline_airlock.mcp_bridge import Bridge, FileCredentials
+
+    port, _, _ = running
+    # a certificate that names no agent: the gateway answers 403 with a body that is not JSON-RPC
+    bridge = Bridge(
+        f"https://localhost:{port}",
+        FileCredentials(str(certs / "gateway.pem"), str(certs / "gateway-key.pem"), str(certs / "ca.pem")),
+    )
+    out = io.StringIO()
+    message = {
+        "jsonrpc": "2.0",
+        "id": 7,
+        "method": "tools/list",
+        "params": {"_meta": {"io.modelcontextprotocol/protocolVersion": "2026-07-28"}},
+    }
+    bridge.run(io.BytesIO((json.dumps(message) + "\n").encode()), out)
+    answer = json.loads(out.getvalue())
+    assert (answer["id"], answer["error"]["code"]) == (7, -32603)
+    assert "HTTP 403" in answer["error"]["message"]
+
+
+def test_bridge_survives_bad_bytes_and_oversized_lines(certs, running):
+    port, _, _ = running
+    ping = json.dumps({"jsonrpc": "2.0", "id": 2, "method": "ping"}).encode()
+    data = b"\xff\xfe not utf-8\n" + b"x" * 70_000 + b"\n" + ping + b"\n"
+    answers = run_bridge_raw(port, certs, data)
+    assert [a.get("error", {}).get("code") for a in answers] == [-32700, -32600, None]
+    assert answers[2] == {"jsonrpc": "2.0", "id": 2, "result": {}}
+
+
+def test_bridge_reports_the_operators_model_label(certs, running):
+    from tesseraline_airlock.mcp_bridge import Bridge, FileCredentials
+
+    port, echo_port, logs = running
+    bridge = Bridge(
+        f"https://localhost:{port}",
+        FileCredentials(str(certs / "agent.pem"), str(certs / "agent-key.pem"), str(certs / "ca.pem")),
+        model="example-model",
+    )
+    out = io.StringIO()
+    call = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {
+            "_meta": {"io.modelcontextprotocol/protocolVersion": "2026-07-28"},
+            "name": "fetch",
+            "arguments": {"url": f"https://localhost:{echo_port}/items"},
+        },
+    }
+    bridge.run(io.BytesIO((json.dumps(call) + "\n").encode()), out)
+    assert logs.observability.records[-1]["model"] == {"reported": "example-model"}

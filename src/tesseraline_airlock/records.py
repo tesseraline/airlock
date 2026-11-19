@@ -38,6 +38,7 @@ class Call:
     redacted: int = 0
     error: str | None = None
     session: str = ""
+    client: str = ""  # the MCP client's own name for itself, as reported
     step: int = 0
     model: dict[str, object] = field(default_factory=dict)
     policy_hash: str = ""
@@ -100,6 +101,7 @@ def response_body(call: Call) -> str:
             "request_id": call.request_id,
             "allow": call.allow,
             "reason": call.reason,
+            "error": call.error,
             "output": call.output if call.allow else f"refused by policy: {call.reason}",
         }
     )
@@ -137,6 +139,7 @@ def observability_entry(call: Call) -> str:
             "ms": call.ms,
             "request_id": call.request_id,
             "session": call.session,
+            "client": call.client,
             "step": call.step,
             "agent": call.agent,
             "model": call.model,

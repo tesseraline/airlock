@@ -22,7 +22,7 @@ from tesseraline_airlock import records
 from tesseraline_airlock.limits import CallCounter, TokenMeter
 from tesseraline_airlock.records import Call
 from tesseraline_airlock.sinks import NullSink, Sink
-from tesseraline_airlock.tools import Tool, ToolContext
+from tesseraline_airlock.tools import Tool, ToolContext, check_description
 
 if TYPE_CHECKING:
     from tesseraline_airlock.egress import Egress
@@ -72,6 +72,8 @@ class Gateway:
         redactor: Redactor | None = None,
     ) -> None:
         self.policy, self.store, self.egress, self.logs = policy, store, egress, logs
+        for t in tools:
+            check_description(t)  # a description that could carry instructions stops the start (threat M2)
         self.tools = {t.name: t for t in tools}
         self.counter = CallCounter()
         self.tokens = TokenMeter()
@@ -99,6 +101,21 @@ class Gateway:
         except Exception as error:  # a broken redactor must not let the text through
             self.dev("error", "redactor_failed", type(error).__name__)
             return "[withheld: the redactor failed]", 1
+
+    def observe_list(self, agent: str, count: int) -> None:
+        """An observability record for an MCP tools/list (no decision to audit: listing runs nothing)."""
+        self.observe(
+            Call(
+                request_id=uuid.uuid4().hex[:16],
+                ts=now_iso(),
+                agent=agent,
+                tool="mcp:tools/list",
+                arg_sizes={},
+                arg_hashes={},
+                allow=True,
+                reason=f"{count} tools listed",
+            )
+        )
 
     def audit(self, call: Call) -> None:
         """Write the audit record; raise `AuditUnavailableError` when it cannot be written."""
@@ -169,7 +186,7 @@ class Gateway:
         return call
 
     def call_tool(
-        self, agent: str, body: dict[str, object], session: str = "", reported_model: str = ""
+        self, agent: str, body: dict[str, object], session: str = "", reported_model: str = "", client: str = ""
     ) -> tuple[int, str]:
         """Handle `POST /v1/call`. Returns the HTTP status and the JSON body."""
         started = time.monotonic()
@@ -200,7 +217,7 @@ class Gateway:
                 self.observe(call)
                 return 200, records.response_body(call)
         try:
-            call = self.begin(agent, tool, args, session, model)
+            call = replace(self.begin(agent, tool, args, session, model), client=client[:80])
         except AuditUnavailableError:
             return 503, records.error_body(uuid.uuid4().hex[:16], 503, "audit log unavailable; call refused")
         if call.allow:

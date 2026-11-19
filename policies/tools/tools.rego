@@ -14,11 +14,29 @@ allow if {
 	not over_budget
 }
 
-# fetch: the gateway sends the normalised host ("name" or "name:port")
+# fetch: an access list per agent. A URL passes when it is under an `allow` entry and under no `deny` entry.
+# "Under" means the entry itself or anything below it at a whole path segment: "https://github.com/tesseraline"
+# covers /tesseraline and /tesseraline/airlock, not /tesseraline-evil. "https://example.com" covers the whole host.
+# The gateway has normalised the URL already: lower-case host, no user info, no dot segments, no encoded slashes.
+fetch_acl := object.get(data.agents[input.agent], "fetch", {})
+
 args_ok if {
 	input.tool == "fetch"
-	input.args.host in data.agents[input.agent].fetch_hosts
+	some entry in object.get(fetch_acl, "allow", [])
+	under(input.args.url, entry)
+	not fetch_denied
 }
+
+fetch_denied if {
+	some entry in object.get(fetch_acl, "deny", [])
+	under(input.args.url, entry)
+}
+
+under(url, entry) if url == trim_suffix(entry, "/")
+
+under(url, entry) if startswith(url, concat("", [trim_suffix(entry, "/"), "/"]))
+
+under(url, entry) if startswith(url, concat("", [trim_suffix(entry, "/"), "?"]))
 
 # a model route: any path under the route; the requested model, if named, must be on the agent's list
 args_ok if {
@@ -39,9 +57,20 @@ over_budget if {
 	input.tokens_last_hour >= object.get(data.agents[input.agent], "tokens_per_hour", data.limits.tokens_per_hour)
 }
 
-decision := {"allow": true, "reason": "allowed", "version": data.version} if allow
+# the tools an agent may see in an MCP tools/list; the same data as the decisions below
+visible := sort([t | some t in object.get(data.agents, input.agent, {"tools": []}).tools])
 
-decision := {"allow": false, "reason": why_not, "version": data.version} if not allow
+decision := {"allow": true, "reason": "listed", "tools": visible, "version": data.version} if input.kind == "list"
+
+decision := {"allow": true, "reason": "allowed", "version": data.version} if {
+	input.kind != "list"
+	allow
+}
+
+decision := {"allow": false, "reason": why_not, "version": data.version} if {
+	input.kind != "list"
+	not allow
+}
 
 why_not := sprintf("agent %s is not known to the policy", [input.agent]) if {
 	not data.agents[input.agent]
